@@ -40,3 +40,20 @@ WHERE CustomerID IS NOT NULL
 AND InvoiceNo NOT LIKE 'C%';
 
 
+ADIM 2: Erişim Yönetimi ve Veri İzolasyonu (RLS)
+-- 1. Temel Rol İzinleri: Kullanıcı sadece okuyabilir, admin tam yetkilidir
+GRANT SELECT ON faturalar TO app_user;
+GRANT ALL PRIVILEGES ON faturalar TO app_admin;
+
+-- 2. Güvenlik Duvarını (RLS) Aktif Etme
+ALTER TABLE faturalar ENABLE ROW LEVEL SECURITY;
+
+-- 3. KURAL 1 (Yönetici): app_admin rolü tablodaki tüm satırları görebilir
+CREATE POLICY admin_tam_erisim ON faturalar
+FOR ALL TO app_admin
+USING (true);
+
+-- 4. KURAL 2 (Müşteri): app_user rolü SADECE kendi ID'si ile eşleşen faturaları görebilir
+CREATE POLICY musteri_izolasyonu ON faturalar
+FOR SELECT TO app_user
+USING (musteri_id::text = current_setting('app.current_customer_id', true));
