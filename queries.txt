@@ -1,0 +1,42 @@
+ADIM 1: Temizlik, Veri Şifreleme (TDE) ve Normalizasyon
+-- 1. Temizlik: Varsa eski hatalı tabloları ilişkileriyle birlikte siler
+DROP TABLE IF EXISTS faturalar CASCADE;
+DROP TABLE IF EXISTS musteriler CASCADE;
+
+-- 2. Şifreleme (TDE) eklentisini aktif eder
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- 3. Müşteriler tablosunu oluşturur
+CREATE TABLE musteriler (
+    musteri_id INT PRIMARY KEY,
+    ulke VARCHAR(50),
+    sifre_hash TEXT
+);
+
+-- 4. Kirli veriyi temizleyerek (DISTINCT ON) müşterileri ve Bcrypt ile şifrelenmiş parolalarını içeri aktarır
+INSERT INTO musteriler (musteri_id, ulke, sifre_hash)
+SELECT DISTINCT ON (CustomerID) 
+    CustomerID, 
+    Country, 
+    crypt('gizli_sifre_123', gen_salt('bf'))
+FROM ham_veri
+WHERE CustomerID IS NOT NULL;
+
+-- 5. Faturalar tablosunu oluşturur (Müşteri ID'si ile ilişkilendirilmiş)
+CREATE TABLE faturalar (
+    id SERIAL PRIMARY KEY,
+    fatura_no VARCHAR(20),
+    stok_kodu VARCHAR(20),
+    miktar INT,
+    birim_fiyat DECIMAL(10,2),
+    musteri_id INT REFERENCES musteriler(musteri_id)
+);
+
+-- 6. İptal/İade edilmiş faturaları ('C' ile başlayanlar) filtreleyerek temiz siparişleri aktarır
+INSERT INTO faturalar (fatura_no, stok_kodu, miktar, birim_fiyat, musteri_id)
+SELECT InvoiceNo, StockCode, Quantity, UnitPrice, CustomerID
+FROM ham_veri
+WHERE CustomerID IS NOT NULL
+AND InvoiceNo NOT LIKE 'C%';
+
+
