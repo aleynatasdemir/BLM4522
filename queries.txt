@@ -57,3 +57,34 @@ USING (true);
 CREATE POLICY musteri_izolasyonu ON faturalar
 FOR SELECT TO app_user
 USING (musteri_id::text = current_setting('app.current_customer_id', true));
+
+
+ADIM 3: Audit Logları (Denetim İzleri ve Tetikleyiciler)
+-- 1. Güvenlik İhlallerini Kaydedeceğimiz Audit (Log) Tablosu
+CREATE TABLE guvenlik_loglari (
+    log_id SERIAL PRIMARY KEY,
+    kullanici VARCHAR(50),
+    islem_tarihi TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    islem_tipi VARCHAR(50),
+    mesaj TEXT
+);
+
+-- 2. Yetkisiz Silme Denemelerini Yakalayacak Fonksiyon
+CREATE OR REPLACE FUNCTION fatura_silmeyi_engelle_ve_logla()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Eğer işlemi yapan kişi admin değilse, işlemi reddet ve logla
+    IF current_user != 'app_admin' THEN
+        INSERT INTO guvenlik_loglari (kullanici, islem_tipi, mesaj)
+        VALUES (current_user, 'YETKİSİZ_SİLME_GİRİŞİMİ', 'Kullanıcı fatura silmeye çalıştı. Hedef Fatura No: ' || OLD.fatura_no);
+        
+        RAISE EXCEPTION 'Güvenlik İhlali: Müşteriler (app_user) fatura silebilir yetkisine sahip değildir!';
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3. Fonksiyonu Veritabanı Tablosuna Bağlayan Tetikleyici (Trigger)
+CREATE TRIGGER audit_fatura_silme
+BEFORE DELETE ON faturalar
+FOR EACH ROW EXECUTE FUNCTION fatura_silmeyi_engelle_ve_logla();
