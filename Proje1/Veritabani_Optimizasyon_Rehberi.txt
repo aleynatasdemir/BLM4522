@@ -1,151 +1,92 @@
 =============================================================
-POSTGRESQL PERFORMANS OPTİMİZASYONU VE İZLEME REHBERİ
+POSTGRESQL PERFORMANS OPTİMİZASYONU VE İZLEME REHBERİ (A+ SEVİYESİ)
 =============================================================
 
-Bu dokümanda, `nyc_taxi` veritabanı projeniz için sırasıyla uygulayabileceğiniz komutlar ve açıklamaları yer almaktadır. Lütfen Terminal (Komut İstemcisi) ve PostgreSQL (psql) üzerinden adımları sırayla uygulayın. Takıldığınız bir yer olursa direkt bana sorabilirsiniz.
+Bu dokümanda, `nyc_taxi` veritabanı projeniz için sırasıyla uygulayabileceğiniz komutlar ve açıklamalar yer almaktadır. Lütfen TablePlus veya psql üzerinden adımları sırayla uygulayarak sonuçlarınızı (çıkan tabloları ve süreleri) not alınız.
 
 -------------------------------------------------------------
-ADIM 1: Veritabanını Kurma ve Verileri Alma
+ADIM 1: Veritabanını Kurma ve Verileri Alma (Tamamlandı)
 -------------------------------------------------------------
-Mevcut SQL dosyasını yeni bir veritabanına aktaracağız.
-
-Önce terminalden PostgreSQL'e bağlanın (gerekirse postgres kullanıcısı ile):
-$ psql -U postgres
-
-1. Yeni bir veritabanı oluşturun:
-   CREATE DATABASE nyc_taxi;
-
-2. Oluşturulan veritabanına bağlanın:
-   \c nyc_taxi
-
-3. Masaüstünüzdeki SQL dosyasını içeri aktarın:
-   \i /Users/aleyna/Desktop/BLM4522-PROJE3/Proje1/taxi_trips.sql
+1. Yeni bir veritabanı oluşturuldu: `CREATE DATABASE nyc_taxi;`
+2. SQL dosyası içeri aktarıldı.
 
 -------------------------------------------------------------
-ADIM 2: Veritabanı İzleme (Monitoring & Profiling)
+ADIM 2: Sistem İzleme (Monitoring & En Yavaş Sorguyu Bulma)
 -------------------------------------------------------------
-SQL Profiler veya DMV yerine, PostgreSQL'in en güçlü izleme aracı olan `pg_stat_statements` eklentisini (extension) kullanacağız.
-
-1. Eklentiyi aktifleştirin (Bunu `nyc_taxi` veritabanına bağlıyken yapmalısınız):
-   CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
-
-2. Bir süre farklı sorgular çalıştırdıktan sonra sisteminizi yoran "En yavaş 5 sorguyu" bulmak için şu kodu çalıştırabilirsiniz:
-   SELECT query, calls, total_exec_time, rows,
-          100.0 * shared_blks_hit / nullif(shared_blks_hit + shared_blks_read, 0) AS hit_percent
-   FROM pg_stat_statements
-   ORDER BY total_exec_time DESC
+Sistem hangi sorguda zorlanıyor bunu görmek için Monitoring ayarı yapılır. (Not: Postgres.app izin vermezse bu adımları doğrudan atlayabilirsiniz, testlerde zorunlu değildir).
+1. `CREATE EXTENSION IF NOT EXISTS pg_stat_statements;`
+2. Sistemi yoran "En yavaş 5 sorguyu" tespit etme:
+   SELECT query, calls, total_exec_time 
+   FROM pg_stat_statements 
+   ORDER BY total_exec_time DESC 
    LIMIT 5;
 
 -------------------------------------------------------------
-ADIM 3: Sorgu İyileştirme (Query Optimization)
+ADIM 3: Disk Alanı Analizi ve Veri Yoğunluğu (Ölü Hücre Temizliği)
 -------------------------------------------------------------
-Bir analiz sorgusunun ne kadar sürdüğünü ve veritabanını nasıl okuduğunu `EXPLAIN ANALYZE` ile tespit edebiliriz.
+PostgreSQL'de güncellenen/silinen veriler "dead tuple" oluşturur ve performansı düşürür. Disk şişmesini kontrol edip temizlemeliyiz.
+1. Tablonun diskte kapladığı boyutu analiz edin (Çıkan MB/GB sonucunu not alın):
+   SELECT pg_size_pretty(pg_total_relation_size('taxi_trips'));
 
-Örnek Maliyetli Kayıt Arama Sorgusu (Index'siz haliyle verinin üzerinden tek tek taranacaktır - Seq Scan):
+2. Sistemin ölü kayıtlarını fiziksel temizlemek ve istatistikleri güçlendirmek için çalıştırın:
+   VACUUM ANALYZE taxi_trips;
+
+-------------------------------------------------------------
+ADIM 4: Sorgu İyileştirme (Query Optimization - Derin Analiz)
+-------------------------------------------------------------
+Sorgudaki darboğazları sadece Execution Time ile değil "Cost", "Rows" ve "Loops" parametreleriyle de izlemeliyiz.
+
+1. İndekssiz maliyetli arama testi:
    EXPLAIN ANALYZE
    SELECT passenger_count, AVG(trip_duration) 
    FROM taxi_trips 
    WHERE pickup_datetime >= '2016-01-01' AND pickup_datetime < '2016-03-01'
    GROUP BY passenger_count;
 
-Çıktıda "Execution Time" (Çalışma süresi) kısmına ve "Seq Scan on taxi_trips" yazdığına dikkat edin. (Seq scan tüm tabloyu satır satır aradığı anlamına gelir).
-Execution Time: 184.114 ms
--------------------------------------------------------------
-ADIM 4: İndeks Yönetimi (Index Management)
--------------------------------------------------------------
-Sorgu hızımızı artırmak için doğru indeksleme stratejisini yapmalıyız. Yukarıdaki sorguda filtreleme `pickup_datetime` kolonunda yapıldı.
+- Çıktıda dikkat edilecekler (hocaya/rapora eklenecek):
+  * "Seq Scan" (Tüm tablo okuması) uyarısı var mı?
+  * Maliyet donanım skoru (Cost) kaç binden başlıyor?
+  * Çalışma süresi (Execution Time) kaç ms sürmüş?
 
-1. Tabloya bir B-Tree Index ekleyelim:
+-------------------------------------------------------------
+ADIM 5: İndeks Yönetimi (B-Tree ve BRIN Indexing)
+-------------------------------------------------------------
+Sorguyu hızlandırmak için iki farklı indeks türü deneriz:
+
+1. ALTERNATİF - BRIN İNDEKS (Büyük veri kümeli tarihler/sıralı veriler için en iyi seçenek):
+   CREATE INDEX idx_brin_pickup ON taxi_trips USING BRIN(pickup_datetime);
+
+2. TEMEL YÖNTEM - B-TREE (Alternatif):
    CREATE INDEX idx_taxi_pickup_datetime ON taxi_trips(pickup_datetime);
 
-2. Şimdi ADIM 3'teki aynı `EXPLAIN ANALYZE` sorgusunu TEKRAR çalıştırın. Çıktıda artık "Index Scan" / "Bitmap Index Scan" görülmeli ve Execution Time süresinin ciddi şekilde düştüğünü fark edeceksiniz.
-OUTPUT:
-Finalize GroupAggregate  (cost=31924.04..31926.19 rows=7 width=36) (actual time=66.312..67.112 rows=8.00 loops=1)
-  Group Key: passenger_count
-  Buffers: shared hit=783 read=20069
-  ->  Gather Merge  (cost=31924.04..31926.02 rows=17 width=36) (actual time=66.307..67.105 rows=22.00 loops=1)
-        Workers Planned: 2
-        Workers Launched: 2
-        Buffers: shared hit=783 read=20069
-        ->  Sort  (cost=30924.02..30924.04 rows=7 width=36) (actual time=60.743..60.744 rows=7.33 loops=3)
-              Sort Key: passenger_count
-              Sort Method: quicksort  Memory: 25kB
-              Buffers: shared hit=783 read=20069
-              Worker 0:  Sort Method: quicksort  Memory: 25kB
-              Worker 1:  Sort Method: quicksort  Memory: 25kB
-              ->  Partial HashAggregate  (cost=30923.85..30923.92 rows=7 width=36) (actual time=60.721..60.722 rows=7.33 loops=3)
-                    Group Key: passenger_count
-                    Batches: 1  Memory Usage: 32kB
-                    Buffers: shared hit=769 read=20069
-                    Worker 0:  Batches: 1  Memory Usage: 32kB
-                    Worker 1:  Batches: 1  Memory Usage: 32kB
-                    ->  Parallel Seq Scan on taxi_trips  (cost=0.00..29954.53 rows=193865 width=8) (actual time=0.227..43.831 rows=156002.33 loops=3)
-"                          Filter: ((pickup_datetime >= '2016-01-01 00:00:00'::timestamp without time zone) AND (pickup_datetime < '2016-03-01 00:00:00'::timestamp without time zone))"
-                          Rows Removed by Filter: 330212
-                          Buffers: shared hit=769 read=20069
-Planning:
-  Buffers: shared hit=33 read=5
-Planning Time: 1.419 ms
-Execution Time: 67.163 ms
-3.SELECT passenger_count, AVG(trip_duration) 
-FROM taxi_trips 
-WHERE pickup_datetime >= '2016-01-01' AND pickup_datetime < '2016-01-07'
-GROUP BY passenger_count;
-OUTPUT:
-1	993.1396799661638235
-5	895.9632670700086430
-4	783.5825147347740668
-2	973.0018847180775876
-0	1085.5000000000000000
-6	862.8681003584229391
-3	1011.3589189189189189
-8	104.0000000000000000
+3. Yukarıdaki indekslerden birini veya ikisini oluşturduktan sonra ADIM 4'teki EXPLAIN ANALYZE kodunu TEKRAR test edip yeni süreyi (Execution Time) ölçün.
 
-3. "Gereksiz indeksleri kaldırma" (Kullanılmayan İndeksleri Bulma):
-   Sistemde var olan ama hiç kullanılmayan (okunmayan) indeksleri görmek için şu sorguyu çalıştırın (Anahtar kelime: idx_scan = 0):
-   
+4. Kullanılmayan İndeksleri Bulma:
    SELECT relname AS tablename, indexrelname AS indexname, idx_scan 
    FROM pg_stat_user_indexes 
    WHERE idx_scan = 0 AND indexrelname NOT LIKE '%pk%';
 
-   Bulduğunuz gereksiz bir indeksi silmek için:
-   DROP INDEX index_adi;
+-------------------------------------------------------------
+ADIM 6: Basit Parçalama (Partitioning) Teorik Yaklaşımı
+-------------------------------------------------------------
+Büyük tablolar "Aylara göre vs" parçalara bölünebilir (Partitioning). Böylece motor 1.5 milyon satırı değil, sadece istenen tek parçayı (ilgili ayı) tarayarak performansı zirveye taşır. (Rapor eklentisi içindir, koda dökülmesine gerek yoktur.)
 
 -------------------------------------------------------------
-ADIM 5: Veri Yöneticisi Rolleri (Role Access)
+ADIM 7: Veri Yöneticisi Rolleri (Role Access)
 -------------------------------------------------------------
-Projede farklı erişimlere sahip yöneticiler veya analistler olacaktır. Roller kurup onlara izinler (GRANT) vereceğiz.
+Güvenlik için farklı yetki grupları tanımlama:
 
-1. Tam Yetkili Yönetici (Admin) Rolü Oluşturma:
+1. Tam Yetkili Yönetici:
    CREATE ROLE db_admin WITH LOGIN PASSWORD 'admin123' SUPERUSER;
 
-2. Sadece Veri Okuyabilen (Müdahale Edemeyen) Analist Rolü Sınırlaması:
+2. Sadece Veri Okuyabilen Analist Sınırlaması:
    CREATE ROLE data_analyst WITH LOGIN PASSWORD 'analyst123';
    GRANT CONNECT ON DATABASE nyc_taxi TO data_analyst;
    GRANT USAGE ON SCHEMA public TO data_analyst;
-   # Burada sadece Select (okuma) yetkisi veriliyor:
    GRANT SELECT ON taxi_trips TO data_analyst;
 
-3. Veri Giren ama Silemeyen Uygulama (Data Entry) Rolü:
+3. Veri Giren ama Silemeyen Data Entry Rolü:
    CREATE ROLE data_entry WITH LOGIN PASSWORD 'entry123';
    GRANT CONNECT ON DATABASE nyc_taxi TO data_entry;
    GRANT USAGE ON SCHEMA public TO data_entry;
-   # Sadece Ekleme ve Okuma yetkisi:
    GRANT SELECT, INSERT ON taxi_trips TO data_entry;
-
-NOT: Test etmek için psql'den çıkıp (\q) tekrar `psql -U data_analyst -d nyc_taxi` komutuyla bağlanarak INSERT atmayı denediğinizde "Permission Denied" hatası aldığınızı teyit edebilirsiniz.
-
--- 1. Tam Yetkili Yönetici Rolü (Görünmez bir Süpermen)
-CREATE ROLE db_admin WITH LOGIN PASSWORD 'admin123' SUPERUSER;
-
--- 2. Sadece Veri Okuyabilen, Analist Rolü Sınırlaması (Asla tablo silemez)
-CREATE ROLE data_analyst WITH LOGIN PASSWORD 'analyst123';
-GRANT CONNECT ON DATABASE nyc_taxi TO data_analyst;
-GRANT USAGE ON SCHEMA public TO data_analyst;
-GRANT SELECT ON taxi_trips TO data_analyst;
-
--- 3. Uygulamalara özel, Veri Giren ama Silemeyen Veri Giriş Rolü
-CREATE ROLE data_entry WITH LOGIN PASSWORD 'entry123';
-GRANT CONNECT ON DATABASE nyc_taxi TO data_entry;
-GRANT USAGE ON SCHEMA public TO data_entry;
-GRANT SELECT, INSERT ON taxi_trips TO data_entry; sorgusu çalıştırıldı. 

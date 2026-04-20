@@ -1,0 +1,119 @@
+=============================================================
+POSTGRESQL GÜVENLİK VE İZOLASYON UYGULAMA REHBERİ (A+ SEVİYESİ)
+=============================================================
+
+Proje 3 kapsamındaki karmaşık ve üst düzey güvenlik mimarisini adım adım kendi bilgisayarınızda (TablePlus veya Terminal) test edip sonuçları görebileceğiniz sıfırlanmış kurulum adımları aşağıdadır:
+
+-------------------------------------------------------------
+ADIM 0: TEMİZLİK (Sıfır Kurulum)
+-------------------------------------------------------------
+TablePlus üzerinde sıfırdan ve hatasız başlayabilmek için eski denemeleri silelim:
+```sql
+DROP VIEW IF EXISTS guvenli_faturalar;
+DROP TABLE IF EXISTS guvenlik_loglari CASCADE;
+DROP TABLE IF EXISTS faturalar CASCADE;
+DROP TABLE IF EXISTS musteriler CASCADE;
+DROP TABLE IF EXISTS kartlar CASCADE;
+
+DROP ROLE IF EXISTS app_admin;
+DROP ROLE IF EXISTS app_user;
+```
+
+-------------------------------------------------------------
+ADIM 1: ROL BAZLI GÜVENLİK (RBAC) / YETKİLENDİRME
+-------------------------------------------------------------
+Yetki mimarisini oluşturarak başlıyoruz:
+```sql
+-- Rollerin Kurulması
+CREATE ROLE app_admin WITH LOGIN PASSWORD 'admin123';
+CREATE ROLE app_user WITH LOGIN PASSWORD 'user123';
+```
+
+-------------------------------------------------------------
+ADIM 2: ŞİFRELEME (PGCRYPTO) VE TABLOLARIN İNŞASI
+-------------------------------------------------------------
+```sql
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Müşteri Tablosu
+CREATE TABLE musteriler (
+    musteri_id INT PRIMARY KEY,
+    ulke VARCHAR(50),
+    sifre_hash TEXT
+);
+
+-- Kolon Şifreleme/Hashing işlemi (Bcrypt ile veri ekleme)
+INSERT INTO musteriler (musteri_id, ulke, sifre_hash)
+VALUES (17850, 'Turkey', crypt('Guvenli_Sifre123!', gen_salt('bf')));
+
+-- Fatura Tablosu
+CREATE TABLE faturalar (
+    fatura_no VARCHAR(20) PRIMARY KEY,
+    miktar INT,
+    musteri_id INT REFERENCES musteriler(musteri_id)
+);
+INSERT INTO faturalar (fatura_no, miktar, musteri_id) VALUES ('536365', 5, 17850);
+INSERT INTO faturalar (fatura_no, miktar, musteri_id) VALUES ('ABCD12', 10, 17850);
+
+-- Yetkilerin RBAC'a Atanması
+GRANT ALL PRIVILEGES ON faturalar TO app_admin;
+GRANT SELECT, INSERT ON faturalar TO app_user;
+```
+
+-------------------------------------------------------------
+ADIM 3: İZOLASYON (RLS) VE PERFORMANS İNDEKSLERİNİN BİRLEŞİMİ
+-------------------------------------------------------------
+```sql
+-- RLS (Satır Bazlı Güvenlik)
+ALTER TABLE faturalar ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY musteri_izolasyonu ON faturalar FOR SELECT TO app_user
+USING (musteri_id::text = current_setting('app.current_customer_id', true));
+
+CREATE POLICY admin_izolasyonu ON faturalar FOR ALL TO app_admin
+USING (true);
+
+-- İndeks ile RLS Yavaşlığını Yenme Hamlesi
+CREATE INDEX idx_faturalar_musteri_id ON faturalar(musteri_id);
+```
+
+-------------------------------------------------------------
+ADIM 4: YENİ SİLAHLAR: Veri Maskeleme (Data Masking) ve Güvenli View
+-------------------------------------------------------------
+```sql
+-- Hassas veri testi için Kartlar tablosu oluşturup maskeleme şovu:
+CREATE TABLE kartlar (musteri_id INT, kredi_karti VARCHAR(16));
+INSERT INTO kartlar VALUES (17850, '4545123412349999');
+
+-- İzleme Sorgusu: 4545**** çıktısını gösterme:
+SELECT LEFT(kredi_karti, 4) || '****' AS maskelenmis_kart FROM kartlar;
+
+-- TableView Mimariai: Uygulamalara tabloyu gizleyip View ile hizmet verme:
+CREATE VIEW guvenli_faturalar AS
+SELECT fatura_no, miktar FROM faturalar;
+```
+
+-------------------------------------------------------------
+ADIM 5: DENETİM İZLERİ (AUDIT LOGS)
+-------------------------------------------------------------
+```sql
+CREATE TABLE guvenlik_loglari (
+    kullanici VARCHAR(50), islem_tarihi TIMESTAMP DEFAULT CURRENT_TIMESTAMP, mesaj TEXT
+);
+
+CREATE OR REPLACE FUNCTION engelle_ve_logla() RETURNS TRIGGER AS $$
+BEGIN
+    IF current_user != 'app_admin' THEN
+        INSERT INTO guvenlik_loglari (kullanici, mesaj) 
+        VALUES (current_user, 'YETKİSİZ SİLME: ' || OLD.fatura_no);
+        RAISE EXCEPTION 'Müşteriler fatura silebilir yetkisine sahip değildir!';
+    END IF;
+    RETURN OLD;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER audit_silme BEFORE DELETE ON faturalar
+FOR EACH ROW EXECUTE FUNCTION engelle_ve_logla();
+```
+
+*(Yukarıdaki adımları TablePlus'ta başarıyla yaptıktan sonra Python `sqlinjectiontest.py` dosyasını terminalden çalıştırarak SQL-Injection Hack şovunu da noktalayabilirsiniz!)*
