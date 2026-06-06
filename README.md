@@ -1,5 +1,11 @@
-# BLM4522 — Veritabanı Yönetim Sistemleri | Proje 3. Ödev
+# BLM4522 — Ağ Tabanlı Paralel Dağıtım Sistemleri
+Final Videoları:
+Proje-2 Video Linki: https://drive.google.com/file/d/1TNKNSKkT9kqJEu0aOdcwxZN-9C-VhvsC/view?usp=sharing
+Proje-5 Video Linki: https://drive.google.com/file/d/14YWhOR-cf0MpB_EmLn0qP745pB2NN_bv/view?usp=sharing
+Proje-7 Video Linki: https://drive.google.com/file/d/1C-8TAi14mY4jlNny6dYO4mupWYslA5Oo/view?usp=sharing
 
+
+Vize Videoları:
 Proje-1 Video Linki: https://drive.google.com/file/d/1kCCvulZxg5XM4sEuOw6s4-nn5y6PGLQB/view?usp=drive_link
 Proje-3 Video Linki: https://drive.google.com/file/d/1kpscRiMA794A_KSP9V_ccnpgjIomF8sU/view?usp=drive_link
 
@@ -10,16 +16,16 @@ Proje-3 Video Linki: https://drive.google.com/file/d/1kpscRiMA794A_KSP9V_ccnpgjI
 
 ```
 BLM4522/
-├── Proje1/          # Veritabanı Performans Optimizasyonu
-│   ├── Veritabani_Optimizasyon_Rehberi.txt
-│   ├── Proje1_Rapor_Taslagi.txt
-│   └── Veritabani_Sonuc_Raporu.txt
-├── Proje3/          # Veritabanı Güvenliği ve İzolasyon
-│   ├── Guvenlik_Uygulama_Rehberi.txt
-│   ├── Proje3_Rapor_Taslagi.txt
-│   ├── Veritabani_Guvenlik_Sonuc_Raporu.txt
-│   └── sqlinjectiontest.py
-└── BLM4522-Rapor.pdf
+├── Vize/                   # Vize Projeleri (Performans ve Güvenlik)
+│   ├── Proje1/             # Proje 1 - Veritabanı Performans Optimizasyonu
+│   └── Proje3/             # Proje 3 - Veritabanı Güvenliği ve İzolasyon
+├── Final/                  # Final Projeleri
+│   ├── Proje-2/            # Proje 2 - Yedekleme ve Afet Kurtarma Planı (PITR)
+│   ├── Proje-5/            # Proje 5 - Veri Temizleme ve Stored Procedure Tabanlı ETL
+│   ├── Proje-7/            # Proje 7 - Yedekleme Otomasyonu, Saklama Politikası (Retention)
+│   └── FINAL-BLM4522-Rapor.md
+├── README.md               # Ana Rehber (Bu Dosya)
+└── ...
 ```
 
 ---
@@ -222,14 +228,104 @@ python3 sqlinjectiontest.py
 
 ---
 
+
+---
+
+## 💾 Proje 2 — Veritabanı Yedekleme ve Afet Kurtarma Planı
+
+**Veritabanı:** `kutuphanedb` (Ana Sunucu - Port 5432) & `pitr_demo` (İzole Sunucu - Port 5433)
+
+Bu projede verilerin güvenliği, iş sürekliliği ve felaketten kurtarma senaryoları için mantıksal (Logical) ve fiziksel (Physical) yedekleme stratejileri tasarlanmış ve doğrulanmıştır.
+
+### 📁 2.1 Tam Yedekleme (Full Backup) & Geri Yükleme (Full Restore)
+PostgreSQL'in `pg_dump` aracı kullanılarak sıkıştırılmış binary biçiminde (`Custom Format`) tam yedekler alınmıştır. Aktif veritabanına bağlı olan TablePlus gibi istemcilerin oturumlarını otomatik kesen (`pg_terminate_backend`) ve yedeği geri yükleyen kurtarma betikleri geliştirilmiştir.
+
+```bash
+# Oturumları sonlandır ve yedeği geri yükle
+./restore_full.sh
+```
+
+### ⚡ 2.2 Fark Yedeklemesi (Differential Backup)
+PostgreSQL'de yerleşik olarak bulunmayan fark yedekleme mekanizması, son tam yedekten sonra eklenen kayıtları `INSERT ... ON CONFLICT DO NOTHING` SQL formatında tespit eden özel bir kabuk betiğiyle simüle edilmiştir.
+
+### ⏱️ 2.3 Point-in-Time Recovery (PITR) & WAL Arşivleme
+Port 5433 üzerinde izole bir PostgreSQL cluster'ı kurulmuştur. Fiziksel base backup alınmış ve Write-Ahead Log (WAL) arşivleme aktifleştirilmiştir. Tablonun yanlışlıkla silindiği bir felaket anından hemen önceki milisaniyeye (`recovery_target_time`) geri dönülerek veri kaybı sıfıra indirilmiştir.
+
+```ini
+# postgresql.conf Yapılandırması
+restore_command = 'cp /yol/wal_archive/%f %p'
+recovery_target_time = '2026-06-04 18:53:15.526386'
+recovery_target_action = 'promote'
+```
+
+---
+
+## 🧼 Proje 5 — Veri Temizleme ve Saklı Yordam Tabanlı ETL Süreçleri
+
+**Veritabanı:** `etl_db` (Staging, Production ve Discard Katmanları)
+
+Veri kalitesini (Data Quality) artırmak ve ham veri anomalilerini gidermek için katmanlı bir veri işleme hattı (Data Pipeline) ve PostgreSQL Stored Procedure (Saklı Yordam) mimarisi kurgulanmıştır.
+
+### 🔄 5.1 Saklı Yordam (Stored Procedure) ile Transform & Load
+Tüm veri temizleme ve dönüştürme mantığı `sp_execute_etl()` saklı yordamında toplanarak sunucu tarafında (in-database) çalıştırılmıştır:
+* **INITCAP & Regex:** İsimlerin baş harfleri büyütülür, gereksiz boşluklar elenir.
+* **TRANSLATE:** E-postalardaki Türkçe karakterler (`ı, ş, ğ, ç, ö, ü`) normalize edilir.
+* **Regex E.164 Standardizasyonu:** Telefon numaralarından rakam harici karakterler atılarak başına `+90` eklenir.
+* **Date Parsing:** Farklı formatlardaki tarihler desen eşleme ile `DATE` tipine çevrilir, geçersiz tarihlere `1900-01-01` (fallback) atanır.
+
+### 👥 5.2 Pencere Fonksiyonları ile Tekilleştirme (Deduplication)
+Aynı ID'ye sahip mükerrer kayıtlarda, e-postası ve telefonu en dolu olan en kaliteli kayıt öncelikli olarak seçilir:
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY musteri_id 
+    ORDER BY (e_posta IS NOT NULL) DESC, (telefon IS NOT NULL) DESC, ctid DESC
+)
+```
+
+### ⚡ 5.3 Artışlı/Günlük Yükleme (Incremental Upsert)
+ETL prosedürü, günlük artışlı veri değişimlerini `ON CONFLICT (musteri_id) DO UPDATE SET ...` (UPSERT) yöntemiyle işler. Böylece yeni kayıtlar eklenirken mevcut kayıtlar güncellenir ve staging tablosu sıfırlanır (`TRUNCATE`).
+
+---
+
+## 🤖 Proje 7 — Yedek Otomasyonu, Saklama Politikası ve DBA Raporlama
+
+**Veritabanı:** `kutuphanedb` (Audit ve Temizlik Logları)
+
+Veritabanı yedekleme ve denetim süreçlerini otomatikleştiren SQL Server Agent Job yapısı simüle edilmiştir.
+
+### 📅 7.1 Agent Job Otomasyonu & Cron Zamanlayıcı
+Unix Cron tablosu aracılığıyla periyodik görevler zamanlanmıştır:
+```cron
+# Her gün gece 02:00'de otomatik Tam Yedek (Full Backup) alır
+0 2 * * * /Users/aleyna/Desktop/BLM4522/Final/Proje-7/automated_backup_job.sh -t FULL
+```
+
+### 🗑️ 7.2 Yedek Saklama Politikası (Retention Policy)
+Disk doluluk oranlarını önlemek amacıyla, başarılı her yedekleme sonrasında 3 günden eski yedekler sistemden otomatik silinir. Yapılan bu temizlik işlemleri `retention_log` tablosuna silinen dosya ve kurtarılan disk boyutu bilgileriyle kaydedilir.
+
+### 🔔 7.3 Hata Yönetimi & Uyarı (DBA Alerting)
+Yedekleme sırasında bir hata oluştuğunda (örn. bağlantı kopması), betik hatayı yakalar, `backup_history` tablosuna `FAILED` durumuyla işler ve DBA ekibine acil durum uyarısı (`.eml` formatında e-posta) gönderir.
+
+### 📊 7.4 DBA Uyum Raporu (Compliance Report)
+`generate_backup_report.sh` ile başarı oranı (KPIs), disk tasarruf miktarları, temizlik logları ve hata geçmişi şık bir terminal raporu olarak üretilir.
+
+---
+
 ## 📈 Genel Sonuç
 
-| Konu | Yöntem | Sonuç |
+| Konu | Yöntem / Araç | Elde Edilen Kazanım / Sonuç |
 |---|---|---|
-| Sorgu Hızı | BRIN Index | %500 iyileşme (184ms → 37ms) |
-| Disk Yönetimi | VACUUM ANALYZE | Dead Tuple temizliği |
-| İzleme | pg_stat_statements | Hedefli optimizasyon |
-| Erişim Kontrolü | RBAC (3 rol) | En az ayrıcalık ilkesi |
-| Şifreleme | pgcrypto Bcrypt | Kırılamaz hash |
-| İzolasyon | RLS + Trigger | Satır düzeyi güvenlik |
-| Saldırı Koruması | Parametrik Sorgu | SQL Injection engeli |
+| **Sorgu Hızı** | BRIN Index | %500 iyileşme (184ms → 37ms) |
+| **Disk Yönetimi** | VACUUM ANALYZE | Dead Tuple temizliği ve performans tazeleme |
+| **İzleme** | pg_stat_statements | Hedefli darboğaz tespiti ve sorgu optimizasyonu |
+| **Erişim Kontrolü** | RBAC (3 Rol) | En az ayrıcalık ilkesine uygun güvenlik yapısı |
+| **Şifreleme** | pgcrypto (Bcrypt) | Kırılamaz parola hashleme ve veri sızıntı koruması |
+| **İzolasyon** | RLS (Row Level Security) | Satır düzeyinde müşteri verisi yalıtımı |
+| **Saldırı Koruması** | Parametrik Sorgular | SQL Injection siber saldırı engelleme |
+| **Tam Yedekleme** | pg_dump Custom Format | %70 oranında disk sıkıştırması ve esnek kurtarma |
+| **Fark Yedekleme** | Özel SQL Değişim Yakalama | Sadece son tam yedekten sonra değişen verilerin yedeği |
+| **Anlık Kurtarma** | WAL + PITR | Felaket anından hemen önceki milisaniyeye geri yükleme |
+| **ETL / Temizleme** | Saklı Yordam (PL/pgSQL) | Initcap, Translate ve Regex ile 100% veri arındırma |
+| **Değişim Yönetimi** | Upsert (ON CONFLICT) | Günlük artışlı değişimlerin otomatik production entegrasyonu |
+| **DBA Otomasyonu** | Unix Cron + Shell Scripts | İnsan müdahalesine gerek kalmadan 7/24 Agent Job |
+| **Saklama Politikası**| Otomatik Retention Purge | Disk dolmasını önlemek için eski yedeklerin silinmesi ve loglanması |

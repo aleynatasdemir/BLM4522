@@ -1,0 +1,8 @@
+-- ====================================================================
+-- PostgreSQL Mantıksal Fark Yedeklemesi (Differential Backup Simülasyonu)
+-- Bu dosya tam yedeklemeden sonra veritabanına eklenen yeni verileri içerir.
+-- Oluşturulma Tarihi: 2026-06-07 01:29:19
+-- ====================================================================
+-- Yeni Kitaplar
+-- Yeni Ogrenciler
+-- Yeni OduncAlma Kayıtları

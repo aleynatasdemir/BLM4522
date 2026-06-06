@@ -1,0 +1,66 @@
+========================================================================
+PROJE 1: VERİTABANI PERFORMANS OPTİMİZASYONU VE İZLEME RAPORU (KAPSAMLI)
+========================================================================
+
+1. GİRİŞ VE VERİ KÜMESİ
+Bu projede e-ticaret veya büyük veri analitiği senaryolarını simüle etmek amacıyla yaklaşık 1.5 Milyon satırlık "NYC Taxi Trips" veri kümesi kullanılmıştır. Projenin ana hedefi, devasa veritabanlarındaki yavaşlıkları analiz etmek, doğru indeksleme taktikleriyle sorguları optimize etmek (BRIN ve B-Tree), Veri Şişliğini engellemek (Vacuum mekanizmaları) ve kullanıcı iletişim politikalarını (RBAC) yapılandırmaktır.
+
+------------------------------------------------------------------------
+2. DİSK ALANI VE VERİ YOĞUNLUĞU ANALİZİ (VACUUM YÖNETİMİ)
+------------------------------------------------------------------------
+Büyük veritabanlarında `UPDATE` ve `DELETE` işlemleri, veriyi diskten fiziksel olarak anında silmez, onun yerine Dead Tuple (ölü hücreler) oluşturur. Bu da ciddi bir disk yüküne yol açar.
+Tablonun devasa yapısı test edilmiş (`SELECT pg_size_pretty(pg_total_relation_size('taxi_trips'));`) ve ardından diskte birikmiş olan ölü hücreleri temizlemek, veritabanı belleğini tazelemek amacıyla `VACUUM ANALYZE taxi_trips;` komutu projeye dahil edilmiştir. Performansı üst seviyeye çıkartır.
+
+------------------------------------------------------------------------
+3. İZLEME (MONITORING) VE SİSTEM YÜKLERİNİN TESPİTİ
+------------------------------------------------------------------------
+Performans darboğazlarının pratik nedenlerini görmek için PostgreSQL'in izleme aracı (`pg_stat_statements`) entegre edilmiş, sistemi yoğun etkileyen (Calls değerlerine göre en çok çağrılan ve Total Time ile en çok vakit yiyen) top 5 sorgunun bulunarak körü körüne optimizasyon değil, hedefe yönelik (Targeted) optimizasyon yapılması sağlanmıştır.
+
+------------------------------------------------------------------------
+4. SORGU İYİLEŞTİRME VE DERİN EXPLAIN ANALYZE YORUMLANMASI
+------------------------------------------------------------------------
+Hedeflenen ilk arama (Tarihe ve yolcuya göre filtreleme) İndekssiz bir ortamda denenmiştir.
+KULLANILAN SORGULAR (SQL):
+```sql
+EXPLAIN ANALYZE
+SELECT passenger_count, AVG(trip_duration) 
+FROM taxi_trips 
+WHERE pickup_datetime >= '2016-01-01' AND pickup_datetime < '2016-03-01'
+GROUP BY passenger_count;
+```
+Optimizasyon Öncesi Değerlendirme Modeli: Sistemin okuduğu Query Plan (Maliyet taslağı) incelendiğinde; `Sequential Scan` kullanılmış ve sistem satır satır okunmuştur. "Total Cost" devasa boyutlardadır, `Rows` sayacı milyonları geçmiş, `Actual Time` ise yüksek değerler almıştır. Donanımı tehlikeye atan klasik bir hantal modeldir.
+
+------------------------------------------------------------------------
+5. İNDEKS YÖNETİMİ VE BRIN / B-TREE STRATEJİLERİ
+------------------------------------------------------------------------
+Çökmeleri ve yavaşlamaları engellemek adına tabloyu "Index Scan" metoduyla arayabileceğimiz yeni bir yapı kurulmuştur. 
+KULLANILAN SORGULAR (SQL):
+```sql
+-- Gelişmiş BRIN index yapısı
+CREATE INDEX idx_brin_pickup ON taxi_trips USING BRIN(pickup_datetime);
+
+-- Hiç kullanılmayan (Ölü) indekslerin tespit mekanizması
+SELECT relname AS tablename, indexrelname AS indexname, idx_scan 
+FROM pg_stat_user_indexes 
+WHERE idx_scan = 0 AND indexrelname NOT LIKE '%pk%';
+```
+Optimizasyon Sonrası Değerlendirme Modeli: Klasik B-Tree indeksin yanında "Büyük Veri (Big Data)" ortamlarındaki tarih gibi sıralı artan (Sequential) sensör verileri için **BRIN index** metodu tasarlanmıştır. Çünkü BRIN yapısı diski çok daha az ezer, küçük RAM tüketir.
+**Yorum:** Bu aşamadan sonra çalışan `EXPLAIN ANALYZE` kodunda Cost (I/O) yükü çok kritik miktarda düşmüş, veritabanı zeki bir şekilde taranmış ve performans devasa bir boyutta (katbekat) artmıştır. 
+
+*Not (Parçalama - Partitioning Taktikleri):* Projenin çok daha büyük veri ölçeklerine taşınması gerekirse, bu devasa tablonun AYLARA göre `Partition Table` yöntemiyle parçalanması teorik olarak hedeflenmiştir. Bu yöntemle sorgu yalnızca aranan aydaki bölümü (partition) fiziksel diskten okumakta ve performansı sonsuzluğa doğru scaleable (ölçeklenebilir) yapabilecektir.
+
+------------------------------------------------------------------------
+6. VERİ YÖNETİCİSİ ROLLERİ (RBAC - ROLE BASED ACCESS CONTROL)
+------------------------------------------------------------------------
+KULLANILAN SORGULAR (SQL):
+```sql
+-- Tam Kurumsal Güvenlik Politikaları
+CREATE ROLE db_admin WITH LOGIN PASSWORD 'admin123' SUPERUSER;
+CREATE ROLE data_analyst WITH LOGIN PASSWORD 'analyst123';
+CREATE ROLE data_entry WITH LOGIN PASSWORD 'entry123';
+
+-- Veri Güvenliği Uygulaması
+GRANT SELECT ON taxi_trips TO data_analyst;
+GRANT SELECT, INSERT ON taxi_trips TO data_entry;
+```
+Yetkilendirme Raporu: Sisteme giren uygulamalar silme işlemi yapamasın diye `data_entry`, sadece rapor çeken mühendislerin yanlışlıkla yetkisiz tabloları silmesini engellenmesi için ise `data_analyst` yetkileri "En Az Ayrıcalık" ilkesiyle ayrıştırılmış ve başarılı bir kurumsal mimari elde edilmiştir.

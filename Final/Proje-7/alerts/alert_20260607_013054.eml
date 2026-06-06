@@ -1,0 +1,34 @@
+From: postgresql-alert@kutuphane.com
+To: admin-db@kutuphane.com
+Subject: [CRITICAL] PostgreSQL Backup Job Failed - kutuphanedb (FAIL)
+Date: Sun, 07 Jun 2026 01:30:54 +0300
+Content-Type: text/plain; charset=UTF-8
+MIME-Version: 1.0
+
+ACİL DURUM UYARISI:
+kutuphanedb veritabanı otomatik yedekleme görevi BAŞARISIZ oldu!
+
+Sistem Yöneticisinin Dikkatine,
+
+Kütüphane veritabanı otomatik yedekleme süreci sırasında kritik bir hata tespit edilmiştir. 
+Yedekleme dosyası oluşturulamamış veya veritabanı günlüğü kaydedilememiştir.
+
+Hata Detayları:
+----------------------------------------------------------------------
+Tarih/Saat      : 2026-06-07 01:30:54
+Yedekleme Türü  : FAIL Yedeklemesi (Full/Differential)
+Hedef Yol       : ../Proje-2/backups/kutuphanedb_failed.dump
+Hata Açıklaması : pg_dump: error: connection to server at "localhost" (127.0.0.1), port 5432 failed: FATAL:  database "olmayan_veritabanı" does not exist
+----------------------------------------------------------------------
+
+Olası Hata Sebepleri:
+1. PostgreSQL sunucusu (Port 5432) yanıt vermiyor (Offline).
+2. Disk alanı yetersiz veya yedekleme dizini yazma izinleri kapalı (Permission Denied).
+3. Veritabanı şemasında bütünlük hatası mevcut.
+
+Aksiyon:
+Lütfen derhal terminal veya TablePlus üzerinden veritabanı sunucu durumunu kontrol edin.
+Sistem otomatik olarak bu hata kaydını veritabanı 'backup_history' denetim tablosuna işlemiştir.
+
+-- 
+PostgreSQL Otomatik DBA Uyarısı

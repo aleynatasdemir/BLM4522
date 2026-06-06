@@ -1,0 +1,84 @@
+========================================================================
+PROJE 3: VERİTABANI GÜVENLİĞİ, İZOLASYON VE SİBER SAVUNMA RAPORU (A+ VİZYON)
+========================================================================
+
+1. GİRİŞ VE AMACI
+Bu projenin temel amacı, bir E-Ticaret veritabanı kurgulayarak siber saldırılara, içeriden gelen tehditlere ve veri sızıntılarına karşı güçlü bir güvenlik mimarisi kurmaktır. Proje kapsamında Kolon Bazlı Veri Şifreleme/Hashing, Rol Bazlı Güvenlik (RBAC), Satır Bazlı Veri İzolasyonu (RLS), Ağ kısıtlamaları (pg_hba.conf), Data Masking, Denetim İzleme/Tetikleyiciler (Audit Logs) ve SQL Injection saldırı simülasyonu çalışılmıştır.
+
+------------------------------------------------------------------------
+2. KOLON BAZLI GÜVENLİK (PGCRYPTO), HASHİNG VE PAROLA POLİTİKASI
+------------------------------------------------------------------------
+PostgreSQL ortamında Microsoft SQL Server’daki TDE’nin (Transparent Data Encryption) birebir karşılığı bulunmadığından; Veri Güvenliği `pgcrypto` kütüphanesi yardımıyla "Kolon Bazlı Şifreleme ve Hashleme" yöntemiyle sağlanmıştır.
+Ayrıca teorik yapıda Parola Politikası (Password Policy) kurgulanmış, kullanıcı şifrelerinin yetersiz/basit seçilmesini engellemek adına belirli karmaşıklık kuralları (minimum uzunluk, büyük/küçük ve özel karakter zorunluluğu) ile oluşturulması sağlanmıştır.
+
+KULLANILAN SORGULAR (SQL):
+```sql
+-- Pgcrypto Kütüphanesinin Aktifleştirilmesi ve Bcrypt Hashleme
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+INSERT INTO musteriler (musteri_id, ulke, sifre_hash)
+SELECT DISTINCT ON (CustomerID) CustomerID, Country, crypt('gizli_sifre_123', gen_salt('bf'))
+FROM ham_veri WHERE CustomerID IS NOT NULL;
+```
+Sonuç: Veritabanı dosyaları çalınsa bile, Bcrypt + Salt mekanizması sayesinde sistem geri döndürülemez kriptografik bir savunma sağlar.
+
+------------------------------------------------------------------------
+3. KULLANICI İZOLASYONU (RLS), RBAC (YETKİ YÖNETİMİ) VE İNDEKS İLİŞKİSİ 
+------------------------------------------------------------------------
+Gerçek bir güvenlik mimarisinde RLS (Row Level Security - Satır Filtresi) tek başına yeterli değildir; RBAC (Role-Based Access Control) ile entegre olması gerekir.
+
+- RBAC Entegrasyonu: Projede veritabanı "yöneticileri" ve "uygulamaları" birbirinden net rollerle ayrılmıştır:
+```sql
+CREATE ROLE app_admin;
+CREATE ROLE app_user;
+GRANT ALL PRIVILEGES ON faturalar TO app_admin;
+GRANT SELECT, INSERT ON faturalar TO app_user;
+```
+
+- RLS (İzolasyon) Bitişimi: Sistemde `app_user` kendi ID'sine ait faturalar hariç kimseyi göremez.
+```sql
+ALTER TABLE faturalar ENABLE ROW LEVEL SECURITY;
+CREATE POLICY musteri_izolasyonu ON faturalar FOR SELECT TO app_user
+USING (musteri_id::text = current_setting('app.current_customer_id', true));
+```
+
+- RLS ve İndeks Performans İlişkisi (Kritik Donanım Hamlesi): 
+Çoğu mimaride RLS’nin getirdiği güvenlik, arka planda filtreleme maliyetine dönüşerek performansı düşürür. RLS politikalarının yarattığı o potansiyel performans maliyetini (hantallığı) ortadan kaldırmak için, filtrelemenin uygulandığı Müşteri ID'sine direkt olarak İndeksleme eklenmiştir:
+```sql
+CREATE INDEX idx_faturalar_musteri_id ON faturalar(musteri_id);
+```
+
+------------------------------------------------------------------------
+4. AĞ GÜVENLİĞİ VE IP KISITLAMASI (PG_HBA.CONF)
+------------------------------------------------------------------------
+Projenin ağ (network) güvenliği kapsamında PostgreSQL yapılandırma dosyalarından `pg_hba.conf` üzerinden fiziksel bir güvenlik duvarı tasarlanmıştır. Sunucunun her bağlantıya cevap vermesini (Brute-force vb. tehditlere açık kalmasını) önlemek adına, belirtilen "Beyaz Liste" (Whitelist) IP adresleri dışındaki tüm dış dünya bağlantıları engellenmiştir.
+
+------------------------------------------------------------------------
+5. VERİ MASKELEME (DATA MASKING) VE SİSTEM VIEW'LARI
+------------------------------------------------------------------------
+Hassas verilerin raporlama sistemlerinde veya analistlerde açık olarak çıkmasını engellemek projeyi A+ seviyeye çıkaran unsurlardandır.
+
+- Data Masking: Müşterinin PII (Kişisel) verilerinin belirli kısımları karakter gizleme yöntemiyle korunur.
+```sql
+SELECT LEFT(kredi_karti, 4) || '****' FROM kartlar;
+```
+- Sistem Görüntüleri (View'lar): Orijinal tabloyu kullanıcılara doğrudan açmak yerine, manipülasyona kapalı proxy görevi gören "View" mekanizmaları teşkil edilmiştir:
+```sql
+CREATE VIEW guvenli_faturalar AS
+SELECT fatura_no, miktar FROM faturalar;
+```
+
+------------------------------------------------------------------------
+6. DENETİM İZLERİ (AUDIT LOGS) VE TETİKLEYİCİ SAVUNMASI (TRIGGERS)
+------------------------------------------------------------------------
+Kritik işlemlerin loglanması için "BEFORE DELETE ON faturalar" kuralı bağlamında bir Trigger (Tetikleyici) yazılmıştır. `app_admin` dışındaki herhangi biri fatura tablosundan kayıt silmeye kalkarsa, sistem otomatik olarak `RAISE EXCEPTION` fırlatarak işlemi engeller ve saldırı/ihlali anında "guvenlik_loglari" tablosuna kanıt olarak kaydeder.
+
+------------------------------------------------------------------------
+7. SQL INJECTION ZAFİYET TESTİ VE GERÇEK ZAMANLI KORUMA (PYTHON)
+------------------------------------------------------------------------
+* Hacker Senaryosu (String Birleştirme Zafiyeti): Python tarafında SQL'in `fatura_no = '" + girdi + "'` şeklinde dinamik yazıldığı güvensiz test yapılmıştır. Güvensiz sisteme yollanan `536365' OR '1'='1` payload'u, güvenlik kalkanlarını indirmiş ve gizli olan tüm e-fatura listesini veritabanı dışına sızdırmıştır. (Saldırı Başarılı)
+* Gerçek Koruma Modeli: Savunma mimarisi Parametrik Sorgu / Prepared Statement altyapısına yükseltilmiştir (`fatura_no = %s`). SQL motoruna `%s` ile yollanan zararlı metin, motor tarafından bir kod (execute) değil bir "metin harf grubu" (string parameter) olarak algılandığı için hack denemesi kırılmış ve sistem mükemmel şekilde korunmuştur.
+
+------------------------------------------------------------------------
+8. GENEL DEĞERLENDİRME
+Sonuç olarak Proje 3; Hash bazlı Kriptografinin, RBAC-RLS koalisyonu ve İndeks optimizasyonunun ustaca harmanlandığı; Ağ tarafında pg_hba.conf kısıtları, Data Masking estetikleri, Tetikleyici Savunma Duvarları ve Parametrik Uygulama Seviyesi Saldırı Koruma tekniklerinin kanıtları ile dolu eşsiz bir veritabanı güvenlik mimarisi oluşturmuştur.
